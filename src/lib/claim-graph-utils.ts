@@ -1,0 +1,259 @@
+import type { AuditSentence, SentenceStatus } from "./audit-types";
+
+// ═══════════════════════════════════════════
+// CLAIM DEPENDENCY GRAPH
+// ═══════════════════════════════════════════
+
+export type ClaimNodeStatus = SentenceStatus | "cascade";
+
+export type EdgeRelation = "depends_on" | "derived_from" | "assumes";
+
+export interface ClaimNode {
+  id: string;
+  label: string; // e.g. "C1"
+  shortSummary: string; // max 6-8 word summary for display
+  text: string;
+  originalStatus: SentenceStatus;
+  effectiveStatus: ClaimNodeStatus;
+  confidenceLow: number;
+  confidenceHigh: number;
+  x: number;
+  y: number;
+  dependsOn: string[]; // upstream claim IDs
+  cascadeSource?: string; // if cascade, which contradicted node caused it
+  isRootCause: boolean; // contradicted node with downstream dependents
+}
+
+export interface ClaimEdge {
+  from: string;
+  to: string;
+  isCascade: boolean; // true if this edge propagates a contradiction
+  relation: EdgeRelation; // human-readable edge label
+}
+
+export interface ClaimGraph {
+  nodes: ClaimNode[];
+  edges: ClaimEdge[];
+}
+
+// Dependency definitions: which claims depend on which
+// This creates a realistic causal chain for the mock data
+const DEPENDENCY_MAP: Record<string, string[]> = {
+  s1: [],           // Founding — root claim
+  s9: ["s1"],       // Dr. Kapoor's credentials depend on her being the founder
+  s3: ["s1"],       // Training data depends on company existing
+  s2: ["s1"],       // FDA clearance depends on company existing
+  s5: ["s2"],       // Partnerships depend on FDA regulatory status
+  s6: ["s3", "s2"], // Accuracy claims depend on training data AND FDA scope
+  s4: ["s1", "s5"], // Revenue depends on company + partnerships
+  s7: ["s1"],       // EU expansion depends on company existing
+  s8: ["s1"],       // Employee count depends on company existing
+  s10: ["s6"],      // WHO endorsement depends on clinical accuracy claims
+  s11: ["s1", "s4"], // Series B funding depends on company + financials
+};
+
+/**
+ * Generate a short (3-5 word) title from a claim's full text.
+ * Avoids truncation — picks the most meaningful short phrase.
+ */
+function generateShortSummary(text: string): string {
+  const cleaned = text.replace(/["""]/g, "").trim();
+  // Try to extract a concise subject-verb phrase
+  // Remove leading filler like "The company", "According to"
+  const simplified = cleaned
+    .replace(/^(According to[^,]*,\s*)/i, "")
+    .replace(/^(The\s+)/i, "")
+    .replace(/^(It\s+is\s+)/i, "");
+  const words = simplified.split(/\s+/);
+  if (words.length <= 5) return simplified;
+  // Take first 4-5 words, ensuring we end on a whole word
+  return words.slice(0, 4).join(" ");
+}
+
+/**
+ * Infer the edge relationship type based on the nature of the dependency.
+ */
+function inferEdgeRelation(fromId: string, toId: string): EdgeRelation {
+  // Heuristic: root nodes are "depends_on", derived data is "derived_from",
+  // and claims that presuppose another are "assumes"
+  const assumptionPairs = new Set(["s6-s3", "s10-s6", "s11-s4"]);
+  const derivedPairs = new Set(["s4-s1", "s4-s5", "s6-s2", "s11-s1"]);
+  
+  const key = `${toId}-${fromId}`;
+  if (assumptionPairs.has(key)) return "assumes";
+  if (derivedPairs.has(key)) return "derived_from";
+  return "depends_on";
+}
+
+/**
+ * Build a claim dependency graph from audit sentences.
+ * Propagates contradictions through dependency chains.
+ */
+export function buildClaimGraph(sentences: AuditSentence[]): ClaimGraph {
+  const sentenceMap = new Map(sentences.map((s) => [s.id, s]));
+
+  // Build nodes with original status
+  const nodes: ClaimNode[] = sentences.map((s, i) => ({
+    id: s.id,
+    label: `C${i + 1}`,
+    shortSummary: generateShortSummary(s.text),
+    text: s.text,
+    originalStatus: s.status,
+    effectiveStatus: s.status,
+    confidenceLow: s.confidence.low,
+    confidenceHigh: s.confidence.high,
+    x: 0,
+    y: 0,
+    dependsOn: DEPENDENCY_MAP[s.id] || [],
+    isRootCause: false, // will be computed after cascade propagation
+  }));
+
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
+  // Build edges
+  const edges: ClaimEdge[] = [];
+  for (const node of nodes) {
+    for (const depId of node.dependsOn) {
+      if (nodeMap.has(depId)) {
+        edges.push({
+          from: depId,
+          to: node.id,
+          isCascade: false,
+          relation: inferEdgeRelation(depId, node.id),
+        });
+      }
+    }
+  }
+
+  // Propagate cascade hallucinations (BFS from contradicted nodes)
+  const contradicted = nodes.filter((n) => n.originalStatus === "contradicted");
+  const visited = new Set<string>();
+
+  // Build adjacency list (downstream)
+  const downstream = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!downstream.has(edge.from)) downstream.set(edge.from, []);
+    downstream.get(edge.from)!.push(edge.to);
+  }
+
+  const queue = contradicted.map((n) => n.id);
+  for (const id of queue) visited.add(id);
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    const children = downstream.get(currentId) || [];
+
+    for (const childId of children) {
+      const child = nodeMap.get(childId);
+      if (!child) continue;
+
+      // Only cascade if the child isn't already contradicted
+      if (child.originalStatus !== "contradicted" && !visited.has(childId)) {
+        child.effectiveStatus = "cascade";
+        child.cascadeSource = currentId;
+
+        // Mark the edge as cascade
+        const edge = edges.find((e) => e.from === currentId && e.to === childId);
+        if (edge) edge.isCascade = true;
+
+        visited.add(childId);
+        queue.push(childId);
+      } else if (child.originalStatus === "contradicted") {
+        // Edge to an already-contradicted node is still cascade-colored
+        const edge = edges.find((e) => e.from === currentId && e.to === childId);
+        if (edge) edge.isCascade = true;
+      }
+    }
+  }
+
+  // Identify root cause claims: contradicted nodes that have downstream dependents
+  for (const node of contradicted) {
+    const hasDownstream = downstream.has(node.id) && (downstream.get(node.id)!.length > 0);
+    if (hasDownstream) {
+      node.isRootCause = true;
+    }
+  }
+
+  // Layout: hierarchical left-to-right by dependency depth
+  const depths = computeDepths(nodes, edges);
+  const maxDepth = Math.max(...Array.from(depths.values()), 0);
+
+  // Group nodes by depth
+  const byDepth = new Map<number, ClaimNode[]>();
+  for (const node of nodes) {
+    const d = depths.get(node.id) || 0;
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d)!.push(node);
+  }
+
+  // Assign positions — generous spacing for readability
+  const PADDING_X = 300;
+  const PADDING_Y = 130;
+  const OFFSET_X = 140;
+  const OFFSET_Y = 60;
+
+  for (let depth = 0; depth <= maxDepth; depth++) {
+    const group = byDepth.get(depth) || [];
+    const totalHeight = (group.length - 1) * PADDING_Y;
+    const startY = -totalHeight / 2 + OFFSET_Y;
+
+    group.forEach((node, i) => {
+      node.x = depth * PADDING_X + OFFSET_X;
+      node.y = startY + i * PADDING_Y;
+    });
+  }
+
+  return { nodes, edges };
+}
+
+function computeDepths(
+  nodes: ClaimNode[],
+  edges: ClaimEdge[]
+): Map<string, number> {
+  const depths = new Map<string, number>();
+  const incoming = new Map<string, Set<string>>();
+
+  for (const node of nodes) {
+    incoming.set(node.id, new Set());
+  }
+  for (const edge of edges) {
+    incoming.get(edge.to)?.add(edge.from);
+  }
+
+  // Topological sort with depth tracking
+  const queue: string[] = [];
+  for (const [id, deps] of incoming) {
+    if (deps.size === 0) {
+      queue.push(id);
+      depths.set(id, 0);
+    }
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const currentDepth = depths.get(current) || 0;
+
+    for (const edge of edges) {
+      if (edge.from === current) {
+        const childDeps = incoming.get(edge.to);
+        if (childDeps) {
+          childDeps.delete(current);
+          const newDepth = Math.max(depths.get(edge.to) || 0, currentDepth + 1);
+          depths.set(edge.to, newDepth);
+          if (childDeps.size === 0) {
+            queue.push(edge.to);
+          }
+        }
+      }
+    }
+  }
+
+  // Handle any remaining nodes (cycles, etc.)
+  for (const node of nodes) {
+    if (!depths.has(node.id)) {
+      depths.set(node.id, 0);
+    }
+  }
+
+  return depths;
+}
