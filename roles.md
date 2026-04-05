@@ -2,6 +2,7 @@
   <img src="https://img.shields.io/badge/🔪_GHOSTCUT-Team_BYTEFORCES-ff0033?style=for-the-badge&labelColor=0a0a0a" />
 </p>
 
+
 <h1 align="center">🛡️ Team BYTEFORCES — Roles & Contributions</h1>
 
 <h3 align="center">
