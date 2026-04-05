@@ -5,7 +5,7 @@
 <h1 align="center">🚀 GHOSTCUT — Future Scope & Roadmap</h1>
 
 <h3 align="center">
-  <code>April 5 → April 10, 2025 | Sprint to Finals @ IIT Delhi</code>
+  <code>April 5 → April 10, 2026 | Sprint to Finals @ IIT Delhi</code>
 </h3>
 
 <p align="center">
