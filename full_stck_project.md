@@ -4,10 +4,6 @@
 
 <h1 align="center">🛡️ GHOSTCUT — MERN Stack Work Division</h1>
 
-<h3 align="center">
-  <code>Team BYTEFORCES · IIT Delhi Hackathon 2025</code>
-</h3>
-
 <p align="center">
   <strong>MongoDB · Express.js · React.js · Node.js</strong><br/>
   <sub>Complete full-stack MERN application — built by two developers</sub>
